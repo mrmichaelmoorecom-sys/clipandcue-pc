@@ -21,9 +21,9 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowThreadProcessId,
-    RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_CLIPBOARDUPDATE, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW,
+    GetWindowThreadProcessId, RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE, WNDCLASSW,
 };
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
@@ -43,6 +43,7 @@ pub struct SurveyEvent {
     pub timestamp: String,
     pub sequence: u32,
     pub source_exe: Option<String>,
+    pub source_via: &'static str,
     pub formats: Vec<FormatEntry>,
 }
 
@@ -90,12 +91,10 @@ fn registered_format_name(id: u32) -> Option<String> {
     }
 }
 
-/// Resolve the exe name of the window that owns the clipboard (the copier).
-fn clipboard_owner_exe() -> Option<String> {
+fn window_exe(hwnd: HWND) -> Option<String> {
     unsafe {
-        let owner = GetClipboardOwner().ok()?;
         let mut pid = 0u32;
-        GetWindowThreadProcessId(owner, Some(&mut pid));
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == 0 {
             return None;
         }
@@ -111,32 +110,45 @@ fn clipboard_owner_exe() -> Option<String> {
         let _ = windows::Win32::Foundation::CloseHandle(process);
         ok.ok()?;
         let full = String::from_utf16_lossy(&buf[..len as usize]);
-        Some(
-            full.rsplit('\\')
-                .next()
-                .unwrap_or(&full)
-                .to_string(),
-        )
+        Some(full.rsplit('\\').next().unwrap_or(&full).to_string())
+    }
+}
+
+/// Resolve the source app: clipboard owner window if there is one, else the
+/// foreground window (OLE/delayed-render writers often own no clipboard window).
+fn clipboard_source_exe() -> (Option<String>, &'static str) {
+    unsafe {
+        if let Ok(owner) = GetClipboardOwner() {
+            if let Some(exe) = window_exe(owner) {
+                return (Some(exe), "owner");
+            }
+        }
+        (window_exe(GetForegroundWindow()), "foreground")
     }
 }
 
 fn survey_clipboard(hwnd: HWND) -> Option<SurveyEvent> {
     unsafe {
-        // The writing app may still hold the clipboard; retry briefly.
+        // Writers often touch the clipboard again right after WM_CLIPBOARDUPDATE
+        // (OLE flush, multi-pass writes). Opening it too early makes THEIR write
+        // fail ("Requested Clipboard operation did not succeed") — observed with
+        // PowerShell Set-Clipboard and WinForms SetImage. Back off first, then
+        // retry with growing delays.
+        std::thread::sleep(std::time::Duration::from_millis(150));
         let mut opened = false;
-        for _ in 0..10 {
+        for attempt in 0..10 {
             if OpenClipboard(Some(hwnd)).is_ok() {
                 opened = true;
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(30));
+            std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
         }
         if !opened {
             return None;
         }
 
         let sequence = GetClipboardSequenceNumber();
-        let source_exe = clipboard_owner_exe();
+        let (source_exe, source_via) = clipboard_source_exe();
         let mut formats = Vec::new();
         let mut fmt = 0u32;
         loop {
@@ -182,6 +194,7 @@ fn survey_clipboard(hwnd: HWND) -> Option<SurveyEvent> {
             timestamp: chrono_free_timestamp(),
             sequence,
             source_exe,
+            source_via,
             formats,
         })
     }
