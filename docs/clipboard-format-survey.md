@@ -90,4 +90,11 @@ Bitmap: `System.Drawing.Bitmap`, `CF_BITMAP` (GDI), `CF_DIB`, `CF_DIBV5`.
    size accounting in the brief are the right shape.
 6. **Source attribution needs a fallback.** `GetClipboardOwner` is often null
    or unhelpful (OLE writers); foreground-window exe is the practical
-   fallback (`source_via` field distinguishes them).
+   fallback (`source_via` field distinguishes them), excluding our own exe.
+7. **Never restore OLE bookkeeping formats.** Restoring captured
+   `DataObject` / `Ole Private Data` poisons OLE's synthesized clipboard
+   view: consumers that paste via `OleGetClipboard` (Office, Adobe, .NET)
+   then see 1 of 6 formats. Verified empirically: skipping them on restore
+   (capture still records them) makes all content formats visible to OLE
+   consumers. Raw `EnumClipboardFormats` sees everything either way — test
+   paste fidelity through OLE, not just Win32.

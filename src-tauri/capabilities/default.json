@@ -1,11 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the dropdown window",
-  "windows": ["dropdown"],
+  "description": "Capability for the dropdown and preferences windows",
+  "windows": ["dropdown", "prefs"],
   "permissions": [
     "core:default",
     "core:window:allow-hide",
+    "core:window:allow-show",
+    "notification:default",
     "opener:default"
   ]
 }

@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Capability for the dropdown window","local":true,"windows":["dropdown"],"permissions":["core:default","core:window:allow-hide","opener:default"]}}
+{"default":{"identifier":"default","description":"Capability for the dropdown and preferences windows","local":true,"windows":["dropdown","prefs"],"permissions":["core:default","core:window:allow-hide","core:window:allow-show","notification:default","opener:default"]}}

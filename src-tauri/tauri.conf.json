@@ -16,11 +16,19 @@
         "label": "dropdown",
         "title": "clipandcue",
         "width": 360,
-        "height": 440,
+        "height": 480,
         "decorations": false,
         "resizable": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
+        "visible": false
+      },
+      {
+        "label": "prefs",
+        "title": "clipandcue preferences",
+        "width": 400,
+        "height": 560,
+        "resizable": false,
         "visible": false
       }
     ],
