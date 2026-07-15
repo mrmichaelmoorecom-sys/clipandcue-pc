@@ -71,7 +71,15 @@ fn update_paste_target(app: &AppHandle) {
 }
 
 fn position_near(window: &WebviewWindow, anchor: PhysicalPosition<f64>) {
-    if let (Ok(size), Ok(Some(monitor))) = (window.outer_size(), window.current_monitor()) {
+    // Clamp to the monitor the ANCHOR is on — clamping to the window's
+    // previous monitor throws the popup off-screen in multi-monitor setups.
+    let monitor = window
+        .app_handle()
+        .monitor_from_point(anchor.x, anchor.y)
+        .ok()
+        .flatten()
+        .or_else(|| window.current_monitor().ok().flatten());
+    if let (Ok(size), Some(monitor)) = (window.outer_size(), monitor) {
         let mon_pos = monitor.position();
         let mon_size = monitor.size();
         let x = (anchor.x - size.width as f64 / 2.0).clamp(
@@ -133,10 +141,6 @@ fn toggle_hud(app: &AppHandle) {
 
 pub(crate) fn paste_nth(app: &AppHandle, n: usize) {
     let state = app.state::<AppState>();
-    let (plain, auto) = {
-        let s = state.settings.lock().unwrap();
-        (s.plain_text_paste, s.auto_paste)
-    };
     let id = {
         let h = state.history.lock().unwrap();
         h.view().get(n).map(|c| c.id.clone())
@@ -145,9 +149,10 @@ pub(crate) fn paste_nth(app: &AppHandle, n: usize) {
         return;
     };
     hide_dropdown(app);
-    if paste::restore_clip(app, &id, plain) && auto {
-        paste::auto_paste(app);
-    }
+    // Delivery blocks (group sequences run seconds); keep the capture
+    // thread's message loop free.
+    let app = app.clone();
+    std::thread::spawn(move || paste::deliver_clip(&app, &id));
 }
 
 pub fn apply_hotkey(app: &AppHandle, old: &str, new: &str) -> Result<(), String> {
@@ -308,11 +313,34 @@ pub fn run() {
                         continue;
                     };
                     let _ = std::fs::remove_file(&f);
-                    let ok = cmd
-                        .trim()
-                        .strip_prefix("restore:")
-                        .map(|id| paste::restore_clip(&handle, id.trim(), false))
-                        .unwrap_or(false);
+                    let cmd = cmd.trim();
+                    let ok = if let Some(id) = cmd.strip_prefix("restore:") {
+                        paste::restore_clip(&handle, id.trim(), false)
+                    } else if let Some(rest) = cmd.strip_prefix("group:") {
+                        let mut parts = rest.split(':');
+                        let (Some(dropped), Some(target)) = (parts.next(), parts.next()) else {
+                            continue;
+                        };
+                        let ok = handle
+                            .state::<AppState>()
+                            .history
+                            .lock()
+                            .unwrap()
+                            .group(dropped.trim(), target.trim());
+                        capture::emit_history(&handle);
+                        ok
+                    } else if let Some(id) = cmd.strip_prefix("ungroup:") {
+                        let ok = handle
+                            .state::<AppState>()
+                            .history
+                            .lock()
+                            .unwrap()
+                            .ungroup(id.trim());
+                        capture::emit_history(&handle);
+                        ok
+                    } else {
+                        false
+                    };
                     let _ = std::fs::write(
                         dir.join("debug-cmd-result.txt"),
                         if ok { "ok" } else { "fail" },
@@ -342,6 +370,8 @@ pub fn run() {
             commands::paste_clip,
             commands::toggle_pin,
             commands::reorder_clip,
+            commands::group_clips,
+            commands::ungroup_clip,
             commands::delete_clip,
             commands::clear_history,
             commands::get_preview,

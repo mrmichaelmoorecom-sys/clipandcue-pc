@@ -16,6 +16,9 @@ pub enum ClipKind {
     Image,
     Files,
     Other,
+    /// User-assembled stack (drag one row onto another). One level deep;
+    /// children hold their own formats and paste sequentially.
+    Group,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -39,6 +42,9 @@ pub struct ClipMeta {
     pub formats: Vec<FormatMeta>,
     /// Content hash across all format bytes, for consecutive-dup detection.
     pub hash: u64,
+    /// Group children, in paste order. Empty for non-groups.
+    #[serde(default)]
+    pub children: Vec<ClipMeta>,
 }
 
 /// Raw captured format, only held in memory between capture and persist.
@@ -90,6 +96,85 @@ impl History {
         self.clips.iter().find(|c| c.id == id)
     }
 
+    /// Find a clip anywhere: top level or inside a group.
+    pub fn find(&self, id: &str) -> Option<&ClipMeta> {
+        self.clips.iter().find_map(|c| {
+            if c.id == id {
+                Some(c)
+            } else {
+                c.children.iter().find(|k| k.id == id)
+            }
+        })
+    }
+
+    /// Drag-to-group, Mac semantics: dropping onto an existing group appends
+    /// the dropped clip('s children); otherwise a new group forms in the
+    /// target's slot with children [target, dropped], inheriting the
+    /// target's pinned state. One level deep — dropped groups flatten in.
+    pub fn group(&mut self, dropped_id: &str, target_id: &str) -> bool {
+        if dropped_id == target_id {
+            return false;
+        }
+        let Some(dropped_pos) = self.clips.iter().position(|c| c.id == dropped_id) else {
+            return false;
+        };
+        if !self.clips.iter().any(|c| c.id == target_id) {
+            return false;
+        }
+        let mut dropped = self.clips.remove(dropped_pos);
+        let target_pos = self.clips.iter().position(|c| c.id == target_id).unwrap();
+
+        let dropped_children = if dropped.kind == ClipKind::Group {
+            std::mem::take(&mut dropped.children)
+        } else {
+            dropped.pinned = false;
+            vec![dropped]
+        };
+
+        let target = &mut self.clips[target_pos];
+        if target.kind == ClipKind::Group {
+            target.children.extend(dropped_children);
+        } else {
+            let mut old_target = target.clone();
+            old_target.pinned = false;
+            let group = ClipMeta {
+                id: format!("group-{}", old_target.id),
+                ts_ms: old_target.ts_ms,
+                source_exe: None,
+                pinned: target.pinned,
+                kind: ClipKind::Group,
+                preview_text: None,
+                preview_image: None,
+                formats: Vec::new(),
+                hash: 0,
+                children: {
+                    let mut kids = vec![old_target];
+                    kids.extend(dropped_children);
+                    kids
+                },
+            };
+            self.clips[target_pos] = group;
+        }
+        self.save_index();
+        true
+    }
+
+    /// Flatten a group back into top-level rows at its position. Children
+    /// come back unpinned.
+    pub fn ungroup(&mut self, id: &str) -> bool {
+        let Some(pos) = self.clips.iter().position(|c| c.id == id && c.kind == ClipKind::Group)
+        else {
+            return false;
+        };
+        let group = self.clips.remove(pos);
+        for (i, mut kid) in group.children.into_iter().enumerate() {
+            kid.pinned = false;
+            self.clips.insert(pos + i, kid);
+        }
+        self.save_index();
+        true
+    }
+
     pub fn newest_unpinned(&self) -> Option<&ClipMeta> {
         self.clips.iter().find(|c| !c.pinned)
     }
@@ -132,6 +217,12 @@ impl History {
     }
 
     fn remove_files(&self, id: &str) {
+        // Groups own no blobs themselves, but their children do.
+        if let Some(meta) = self.clips.iter().find(|c| c.id == id) {
+            for kid in &meta.children {
+                let _ = std::fs::remove_dir_all(self.clip_dir(&kid.id));
+            }
+        }
         let _ = std::fs::remove_dir_all(self.clip_dir(id));
     }
 
@@ -166,8 +257,38 @@ impl History {
     }
 
     pub fn delete(&mut self, id: &str) {
-        self.remove_files(id);
-        self.clips.retain(|c| c.id != id);
+        if self.clips.iter().any(|c| c.id == id) {
+            self.remove_files(id);
+            self.clips.retain(|c| c.id != id);
+        } else {
+            // A child inside a group: remove it (and its blobs); a group
+            // left with one child flattens, with zero children disappears.
+            let dir = self.clip_dir(id);
+            for g in self.clips.iter_mut().filter(|c| c.kind == ClipKind::Group) {
+                g.children.retain(|k| k.id != id);
+            }
+            let _ = std::fs::remove_dir_all(dir);
+            let mut flattened: Vec<ClipMeta> = Vec::new();
+            self.clips.retain_mut(|c| {
+                if c.kind != ClipKind::Group {
+                    return true;
+                }
+                match c.children.len() {
+                    0 => false,
+                    1 => {
+                        let mut kid = c.children.remove(0);
+                        kid.pinned = c.pinned;
+                        flattened.push(kid);
+                        false
+                    }
+                    _ => true,
+                }
+            });
+            // Flattened singles go back on top of the unpinned block.
+            for kid in flattened {
+                self.clips.insert(0, kid);
+            }
+        }
         self.save_index();
     }
 

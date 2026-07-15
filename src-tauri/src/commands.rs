@@ -38,18 +38,32 @@ pub async fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: 
 }
 
 #[tauri::command]
-pub async fn paste_clip(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let (plain, auto) = {
-        let s = state.settings.lock().unwrap();
-        (s.plain_text_paste, s.auto_paste)
-    };
+pub async fn paste_clip(app: AppHandle, id: String) -> Result<(), String> {
     hide_dropdown(&app);
-    if !crate::paste::restore_clip(&app, &id, plain) {
-        return Err("clip could not be restored".into());
+    std::thread::spawn(move || crate::paste::deliver_clip(&app, &id));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn group_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    dropped_id: String,
+    target_id: String,
+) -> Result<(), String> {
+    if !state.history.lock().unwrap().group(&dropped_id, &target_id) {
+        return Err("group failed".into());
     }
-    if auto {
-        crate::paste::auto_paste(&app);
+    emit_history(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn ungroup_clip(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    if !state.history.lock().unwrap().ungroup(&id) {
+        return Err("not a group".into());
     }
+    emit_history(&app);
     Ok(())
 }
 

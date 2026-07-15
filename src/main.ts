@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-type ClipKind = "text" | "image" | "files" | "other";
+type ClipKind = "text" | "image" | "files" | "other" | "group";
 
 interface FormatMeta {
   id: number;
@@ -20,6 +20,7 @@ interface ClipMeta {
   preview_image: string | null;
   formats: FormatMeta[];
   hash: number;
+  children: ClipMeta[];
 }
 
 interface Settings {
@@ -67,6 +68,7 @@ function sourceName(exe: string | null): string {
 /* ---------- dropdown window ---------- */
 
 const previewCache = new Map<string, string>();
+const expandedGroups = new Set<string>();
 
 async function imagePreviewUrl(id: string): Promise<string | null> {
   if (previewCache.has(id)) return previewCache.get(id)!;
@@ -103,13 +105,23 @@ function renderDropdown(clips: ClipMeta[], settings: Settings, hud: boolean) {
     list.appendChild(el("li", "clip empty", "Nothing copied yet"));
   }
 
-  clips.forEach((clip, i) => {
-    const li = el("li", "clip" + (clip.pinned ? " pinned" : ""));
+  const kindIcon = (k: ClipKind) =>
+    ({ text: "📝", image: "🖼", files: "📁", other: "📦", group: "🗂" })[k];
 
-    const num = el("span", "num", i < 9 ? String(i + 1) : "");
-    li.appendChild(num);
-
+  const clipBody = (clip: ClipMeta): HTMLElement => {
     const body = el("div", "clip-body");
+    if (clip.kind === "group") {
+      const first = clip.children[0];
+      const label = first?.preview_text ?? (first ? `[${first.kind}]` : "empty");
+      const extra = clip.children.length - 1;
+      body.appendChild(
+        el("div", "clip-text", extra > 0 ? `${label} +${extra} more` : label),
+      );
+      const meta = el("div", "clip-meta");
+      meta.textContent = `${kindIcon(clip.kind)} group of ${clip.children.length} · pastes in order`;
+      body.appendChild(meta);
+      return body;
+    }
     if (clip.kind === "image") {
       const img = el("img", "thumb") as HTMLImageElement;
       img.alt = "image clip";
@@ -125,12 +137,42 @@ function renderDropdown(clips: ClipMeta[], settings: Settings, hud: boolean) {
       body.appendChild(el("div", "clip-text", text));
     }
     const meta = el("div", "clip-meta");
-    const kindIcon = { text: "📝", image: "🖼", files: "📁", other: "📦" }[clip.kind];
-    meta.textContent = `${kindIcon} ${sourceName(clip.source_exe)} · ${timeAgo(clip.ts_ms)}`;
+    meta.textContent = `${kindIcon(clip.kind)} ${sourceName(clip.source_exe)} · ${timeAgo(clip.ts_ms)}`;
     body.appendChild(meta);
-    li.appendChild(body);
+    return body;
+  };
+
+  clips.forEach((clip, i) => {
+    const li = el("li", "clip" + (clip.pinned ? " pinned" : ""));
+
+    const num = el("span", "num", i < 9 ? String(i + 1) : "");
+    li.appendChild(num);
+
+    const isGroup = clip.kind === "group";
+    if (isGroup) {
+      const expand = el("button", "icon-btn expand", expandedGroups.has(clip.id) ? "▾" : "▸");
+      expand.title = "Show clips in group";
+      expand.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (expandedGroups.has(clip.id)) expandedGroups.delete(clip.id);
+        else expandedGroups.add(clip.id);
+        renderDropdown(clips, settings, hud);
+      });
+      li.appendChild(expand);
+    }
+
+    li.appendChild(clipBody(clip));
 
     const actions = el("div", "actions");
+    if (isGroup) {
+      const ungroup = el("button", "icon-btn", "⤢");
+      ungroup.title = "Ungroup";
+      ungroup.addEventListener("click", (e) => {
+        e.stopPropagation();
+        invoke("ungroup_clip", { id: clip.id });
+      });
+      actions.appendChild(ungroup);
+    }
     const pin = el("button", "icon-btn pin", clip.pinned ? "📌" : "📍");
     pin.title = clip.pinned ? "Unpin" : "Pin";
     pin.addEventListener("click", (e) => {
@@ -149,7 +191,7 @@ function renderDropdown(clips: ClipMeta[], settings: Settings, hud: boolean) {
 
     li.addEventListener("click", () => invoke("paste_clip", { id: clip.id }));
 
-    // Drag to reorder; dropping inside the pinned block pins, below unpins.
+    // Drag: edges reorder (pinned block = pin/unpin), middle groups.
     li.draggable = true;
     li.addEventListener("dragstart", (e) => {
       e.dataTransfer!.setData("text/clip-id", clip.id);
@@ -157,23 +199,56 @@ function renderDropdown(clips: ClipMeta[], settings: Settings, hud: boolean) {
       li.classList.add("dragging");
     });
     li.addEventListener("dragend", () => li.classList.remove("dragging"));
+    const zoneOf = (e: DragEvent): "before" | "after" | "group" => {
+      const r = li.getBoundingClientRect();
+      const y = e.clientY - r.top;
+      if (y < r.height * 0.3) return "before";
+      if (y > r.height * 0.7) return "after";
+      return "group";
+    };
+    const clearZones = () =>
+      li.classList.remove("drop-before", "drop-after", "drop-group");
     li.addEventListener("dragover", (e) => {
       e.preventDefault();
       e.dataTransfer!.dropEffect = "move";
-      li.classList.add("drop-target");
+      clearZones();
+      li.classList.add(`drop-${zoneOf(e)}`);
     });
-    li.addEventListener("dragleave", () => li.classList.remove("drop-target"));
+    li.addEventListener("dragleave", clearZones);
     li.addEventListener("drop", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      li.classList.remove("drop-target");
+      clearZones();
       const dragId = e.dataTransfer!.getData("text/clip-id");
-      if (dragId && dragId !== clip.id) {
-        invoke("reorder_clip", { id: dragId, index: i });
+      if (!dragId || dragId === clip.id) return;
+      const zone = zoneOf(e);
+      if (zone === "group") {
+        invoke("group_clips", { droppedId: dragId, targetId: clip.id });
+      } else {
+        invoke("reorder_clip", { id: dragId, index: zone === "before" ? i : i + 1 });
       }
     });
 
     list.appendChild(li);
+
+    if (isGroup && expandedGroups.has(clip.id)) {
+      clip.children.forEach((kid, ki) => {
+        const kli = el("li", "clip child");
+        kli.appendChild(el("span", "num", `${ki + 1}.`));
+        kli.appendChild(clipBody(kid));
+        const kactions = el("div", "actions");
+        const kdel = el("button", "icon-btn del", "✕");
+        kdel.title = "Remove from group";
+        kdel.addEventListener("click", (e) => {
+          e.stopPropagation();
+          invoke("delete_clip", { id: kid.id });
+        });
+        kactions.appendChild(kdel);
+        kli.appendChild(kactions);
+        kli.addEventListener("click", () => invoke("paste_clip", { id: kid.id }));
+        list.appendChild(kli);
+      });
+    }
   });
 
   // Drop on empty space below the items = move to the end.
@@ -216,7 +291,7 @@ function renderDropdown(clips: ClipMeta[], settings: Settings, hud: boolean) {
 let selectedIndex = -1;
 
 function applySelection(clips: ClipMeta[]) {
-  const items = document.querySelectorAll<HTMLElement>("#clip-list .clip:not(.empty)");
+  const items = document.querySelectorAll<HTMLElement>("#clip-list .clip:not(.empty):not(.child)");
   items.forEach((li, i) => li.classList.toggle("selected", i === selectedIndex));
   if (selectedIndex >= 0 && items[selectedIndex]) {
     items[selectedIndex].scrollIntoView({ block: "nearest" });

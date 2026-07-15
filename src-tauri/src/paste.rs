@@ -47,7 +47,7 @@ pub fn restore_clip(app: &AppHandle, clip_id: &str, plain_text: bool) -> bool {
 
     let formats: Vec<(u32, Vec<u8>)> = {
         let history = state.history.lock().unwrap();
-        let Some(meta) = history.get(clip_id) else {
+        let Some(meta) = history.find(clip_id) else {
             return false;
         };
         meta.formats
@@ -91,17 +91,19 @@ pub fn restore_clip(app: &AppHandle, clip_id: &str, plain_text: bool) -> bool {
     }
 }
 
-/// Focus the recorded paste target and synthesize Ctrl+V.
-pub fn auto_paste(app: &AppHandle) {
+/// Focus the recorded paste target window.
+fn focus_target(app: &AppHandle) {
     let state = app.state::<AppState>();
     let hwnd = HWND(state.paste_target.load(Ordering::SeqCst) as *mut _);
     unsafe {
-        if hwnd.0.is_null() || !IsWindow(Some(hwnd)).as_bool() {
-            return;
+        if !hwnd.0.is_null() && IsWindow(Some(hwnd)).as_bool() {
+            let _ = SetForegroundWindow(hwnd);
         }
-        let _ = SetForegroundWindow(hwnd);
-        std::thread::sleep(std::time::Duration::from_millis(80));
+    }
+}
 
+fn send_ctrl_v() {
+    unsafe {
         let key = |vk, up: bool| INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
@@ -119,5 +121,49 @@ pub fn auto_paste(app: &AppHandle) {
             key(VK_CONTROL, true),
         ];
         SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// Deliver a clip: single clips restore + (optionally) auto-paste; groups
+/// paste every child sequentially, Mac-style — write child, Ctrl+V, wait.
+/// Illustrator needs the ~500ms between cycles (Mac lesson). Blocking —
+/// call from a dedicated thread, never the UI or capture thread.
+pub fn deliver_clip(app: &AppHandle, id: &str) {
+    let state = app.state::<AppState>();
+    let (plain, auto) = {
+        let s = state.settings.lock().unwrap();
+        (s.plain_text_paste, s.auto_paste)
+    };
+    let child_ids: Vec<String> = {
+        let h = state.history.lock().unwrap();
+        h.get(id)
+            .filter(|c| c.kind == crate::history::ClipKind::Group)
+            .map(|g| g.children.iter().map(|k| k.id.clone()).collect())
+            .unwrap_or_default()
+    };
+
+    if child_ids.is_empty() {
+        if restore_clip(app, id, plain) && auto {
+            focus_target(app);
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            send_ctrl_v();
+        }
+        return;
+    }
+
+    if !auto {
+        // Without auto-paste there is no sequence to run: put the first
+        // child on the clipboard so a manual Ctrl+V gets something usable.
+        let _ = restore_clip(app, &child_ids[0], plain);
+        return;
+    }
+
+    focus_target(app);
+    std::thread::sleep(std::time::Duration::from_millis(180));
+    for kid in child_ids {
+        if restore_clip(app, &kid, plain) {
+            send_ctrl_v();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
     }
 }

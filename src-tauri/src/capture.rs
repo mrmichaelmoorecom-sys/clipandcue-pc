@@ -357,6 +357,7 @@ fn handle_update(app: &AppHandle, hwnd: HWND) {
                     .map(|r| FormatMeta { id: r.id, name: r.name.clone(), size: r.bytes.len() as u64 })
                     .collect(),
                 hash,
+                children: Vec::new(),
             };
 
             // Screenshot tools write in multiple passes: collapse image clips

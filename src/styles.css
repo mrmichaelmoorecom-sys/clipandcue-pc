@@ -117,8 +117,28 @@ body {
   opacity: 0.5;
 }
 
-.clip.drop-target {
+.clip.drop-before {
   box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.clip.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.clip.drop-group {
+  background: var(--hover);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.clip.child {
+  padding-left: 34px;
+  background: color-mix(in srgb, var(--bg) 92%, var(--fg));
+}
+
+.icon-btn.expand {
+  padding: 0 2px;
+  flex-shrink: 0;
 }
 
 .num {
