@@ -135,6 +135,26 @@ impl History {
         let _ = std::fs::remove_dir_all(self.clip_dir(id));
     }
 
+    /// Move a clip to `target_view_index` (an index into view() order).
+    /// Dropping inside the pinned block pins it; below the block unpins it.
+    /// A pinned clip dropped right at the boundary stays pinned (move to end
+    /// of the pinned group).
+    pub fn reorder(&mut self, id: &str, target_view_index: usize) -> bool {
+        let Some(pos) = self.clips.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        let mut dragged = self.clips.remove(pos);
+        let mut combined: Vec<ClipMeta> = self.clips.iter().filter(|c| c.pinned).cloned().collect();
+        let pinned_count = combined.len();
+        combined.extend(self.clips.iter().filter(|c| !c.pinned).cloned());
+        let idx = target_view_index.min(combined.len());
+        dragged.pinned = idx < pinned_count || (idx == pinned_count && dragged.pinned);
+        combined.insert(idx, dragged);
+        self.clips = combined;
+        self.save_index();
+        true
+    }
+
     pub fn set_pinned(&mut self, id: &str, pinned: bool) -> bool {
         if let Some(c) = self.clips.iter_mut().find(|c| c.id == id) {
             c.pinned = pinned;

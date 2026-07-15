@@ -148,7 +148,40 @@ function renderDropdown(clips: ClipMeta[], settings: Settings, hud: boolean) {
     li.appendChild(actions);
 
     li.addEventListener("click", () => invoke("paste_clip", { id: clip.id }));
+
+    // Drag to reorder; dropping inside the pinned block pins, below unpins.
+    li.draggable = true;
+    li.addEventListener("dragstart", (e) => {
+      e.dataTransfer!.setData("text/clip-id", clip.id);
+      e.dataTransfer!.effectAllowed = "move";
+      li.classList.add("dragging");
+    });
+    li.addEventListener("dragend", () => li.classList.remove("dragging"));
+    li.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = "move";
+      li.classList.add("drop-target");
+    });
+    li.addEventListener("dragleave", () => li.classList.remove("drop-target"));
+    li.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      li.classList.remove("drop-target");
+      const dragId = e.dataTransfer!.getData("text/clip-id");
+      if (dragId && dragId !== clip.id) {
+        invoke("reorder_clip", { id: dragId, index: i });
+      }
+    });
+
     list.appendChild(li);
+  });
+
+  // Drop on empty space below the items = move to the end.
+  list.addEventListener("dragover", (e) => e.preventDefault());
+  list.addEventListener("drop", (e) => {
+    e.preventDefault();
+    const dragId = e.dataTransfer!.getData("text/clip-id");
+    if (dragId) invoke("reorder_clip", { id: dragId, index: clips.length });
   });
   app.appendChild(list);
 

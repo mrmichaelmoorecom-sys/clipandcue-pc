@@ -341,6 +341,7 @@ pub fn run() {
             commands::set_settings,
             commands::paste_clip,
             commands::toggle_pin,
+            commands::reorder_clip,
             commands::delete_clip,
             commands::clear_history,
             commands::get_preview,

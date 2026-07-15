@@ -70,6 +70,20 @@ pub async fn toggle_pin(app: AppHandle, state: State<'_, AppState>, id: String) 
 }
 
 #[tauri::command]
+pub async fn reorder_clip(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    index: usize,
+) -> Result<(), String> {
+    if !state.history.lock().unwrap().reorder(&id, index) {
+        return Err("no such clip".into());
+    }
+    emit_history(&app);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn delete_clip(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.history.lock().unwrap().delete(&id);
     emit_history(&app);
