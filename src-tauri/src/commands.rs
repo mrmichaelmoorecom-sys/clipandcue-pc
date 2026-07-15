@@ -9,17 +9,17 @@ use crate::state::AppState;
 use crate::{apply_hotkey, hide_dropdown, rebuild_tray_menu};
 
 #[tauri::command]
-pub fn list_clips(state: State<AppState>) -> Vec<ClipMeta> {
-    state.history.lock().unwrap().view()
+pub async fn list_clips(state: State<'_, AppState>) -> Result<Vec<ClipMeta>, String> {
+    Ok(state.history.lock().unwrap().view())
 }
 
 #[tauri::command]
-pub fn get_settings(state: State<AppState>) -> Settings {
-    state.settings.lock().unwrap().clone()
+pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
+    Ok(state.settings.lock().unwrap().clone())
 }
 
 #[tauri::command]
-pub fn set_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<(), String> {
+pub async fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
     let old = {
         let mut s = state.settings.lock().unwrap();
         let old = s.clone();
@@ -38,7 +38,7 @@ pub fn set_settings(app: AppHandle, state: State<AppState>, settings: Settings) 
 }
 
 #[tauri::command]
-pub fn paste_clip(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
+pub async fn paste_clip(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let (plain, auto) = {
         let s = state.settings.lock().unwrap();
         (s.plain_text_paste, s.auto_paste)
@@ -54,7 +54,7 @@ pub fn paste_clip(app: AppHandle, state: State<AppState>, id: String) -> Result<
 }
 
 #[tauri::command]
-pub fn toggle_pin(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
+pub async fn toggle_pin(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let pinned = {
         let mut h = state.history.lock().unwrap();
         let Some(clip) = h.get(&id) else {
@@ -70,15 +70,17 @@ pub fn toggle_pin(app: AppHandle, state: State<AppState>, id: String) -> Result<
 }
 
 #[tauri::command]
-pub fn delete_clip(app: AppHandle, state: State<AppState>, id: String) {
+pub async fn delete_clip(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.history.lock().unwrap().delete(&id);
     emit_history(&app);
+    Ok(())
 }
 
 #[tauri::command]
-pub fn clear_history(app: AppHandle, state: State<AppState>) {
+pub async fn clear_history(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     state.history.lock().unwrap().clear(true);
     emit_history(&app);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -88,28 +90,35 @@ pub struct Preview {
 }
 
 #[tauri::command]
-pub fn get_preview(state: State<AppState>, id: String) -> Option<Preview> {
-    let history = state.history.lock().unwrap();
-    let path = history.preview_path(&id)?;
-    let bytes = std::fs::read(&path).ok()?;
+pub async fn get_preview(state: State<'_, AppState>, id: String) -> Result<Option<Preview>, String> {
+    let path = {
+        let history = state.history.lock().unwrap();
+        history.preview_path(&id)
+    };
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(None);
+    };
     let mime = if path.extension().is_some_and(|e| e == "png") {
         "image/png"
     } else {
         "image/bmp"
     };
-    Some(Preview {
+    Ok(Some(Preview {
         mime: mime.into(),
         b64: base64::engine::general_purpose::STANDARD.encode(bytes),
-    })
+    }))
 }
 
 #[tauri::command]
-pub fn hide_window(app: AppHandle) {
+pub async fn hide_window(app: AppHandle) {
     hide_dropdown(&app);
 }
 
 #[tauri::command]
-pub fn open_prefs(app: AppHandle) {
+pub async fn open_prefs(app: AppHandle) {
     hide_dropdown(&app);
     if let Some(w) = app.get_webview_window("prefs") {
         let _ = w.show();

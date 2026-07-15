@@ -83,53 +83,10 @@ fn position_near(window: &WebviewWindow, anchor: PhysicalPosition<f64>) {
     }
 }
 
-fn register_digit_shortcuts(app: &AppHandle) {
-    let count = app
-        .state::<AppState>()
-        .settings
-        .lock()
-        .unwrap()
-        .show_count
-        .clamp(1, 9);
-    let codes = [
-        Code::Digit1,
-        Code::Digit2,
-        Code::Digit3,
-        Code::Digit4,
-        Code::Digit5,
-        Code::Digit6,
-        Code::Digit7,
-        Code::Digit8,
-        Code::Digit9,
-    ];
-    for code in codes.iter().take(count) {
-        let _ = app.global_shortcut().register(Shortcut::new(None, *code));
-    }
-    let _ = app.global_shortcut().register(Shortcut::new(None, Code::Escape));
-}
-
-fn unregister_digit_shortcuts(app: &AppHandle) {
-    let codes = [
-        Code::Digit1,
-        Code::Digit2,
-        Code::Digit3,
-        Code::Digit4,
-        Code::Digit5,
-        Code::Digit6,
-        Code::Digit7,
-        Code::Digit8,
-        Code::Digit9,
-        Code::Escape,
-    ];
-    for code in codes {
-        let _ = app.global_shortcut().unregister(Shortcut::new(None, code));
-    }
-}
-
 pub fn hide_dropdown(app: &AppHandle) {
     let state = app.state::<AppState>();
     if state.hud_mode.swap(false, Ordering::SeqCst) {
-        unregister_digit_shortcuts(app);
+        capture::post_unregister_digits();
     }
     let _ = dropdown(app).hide();
 }
@@ -158,7 +115,8 @@ fn show_hud(app: &AppHandle) {
     }
     let state = app.state::<AppState>();
     if !state.hud_mode.swap(true, Ordering::SeqCst) {
-        register_digit_shortcuts(app);
+        let count = state.settings.lock().unwrap().show_count;
+        capture::post_register_digits(count);
     }
     let _ = window.show();
     let _ = app.emit("dropdown-shown", true);
@@ -173,7 +131,7 @@ fn toggle_hud(app: &AppHandle) {
     }
 }
 
-fn paste_nth(app: &AppHandle, n: usize) {
+pub(crate) fn paste_nth(app: &AppHandle, n: usize) {
     let state = app.state::<AppState>();
     let (plain, auto) = {
         let s = state.settings.lock().unwrap();
@@ -274,33 +232,14 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
+                    // Keep this handler trivial and NEVER touch shortcut
+                    // registration in here — that deadlocks the dispatch.
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
                     let main_hotkey = *app.state::<HotkeyState>().0.lock().unwrap();
                     if *shortcut == main_hotkey {
                         toggle_hud(app);
-                        return;
-                    }
-                    let digits = [
-                        Code::Digit1,
-                        Code::Digit2,
-                        Code::Digit3,
-                        Code::Digit4,
-                        Code::Digit5,
-                        Code::Digit6,
-                        Code::Digit7,
-                        Code::Digit8,
-                        Code::Digit9,
-                    ];
-                    if app.state::<AppState>().hud_mode.load(Ordering::SeqCst) {
-                        if *shortcut == Shortcut::new(None, Code::Escape) {
-                            hide_dropdown(app);
-                            return;
-                        }
-                        if let Some(n) = digits.iter().position(|&d| *shortcut == Shortcut::new(None, d)) {
-                            paste_nth(app, n);
-                        }
                     }
                 })
                 .build(),

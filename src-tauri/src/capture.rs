@@ -21,10 +21,13 @@ use windows::Win32::System::DataExchange::{
     GetClipboardSequenceNumber,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW,
-    TranslateMessage, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE,
-    WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostMessageW, RegisterClassW,
+    TranslateMessage, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
+    WM_CLIPBOARDUPDATE, WM_HOTKEY, WNDCLASSW,
 };
 
 use crate::formats::{
@@ -35,6 +38,37 @@ use crate::history::{dib_to_bmp, file_name_of, hdrop_paths, ClipKind, ClipMeta, 
 use crate::state::AppState;
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
+static CAPTURE_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// HUD digit hotkeys live on THIS thread's message loop (plain RegisterHotKey),
+/// never on the global-shortcut plugin: registering/unregistering shortcuts
+/// from inside that plugin's own handler dispatch deadlocks the main thread.
+const MSG_REGISTER_DIGITS: u32 = WM_APP + 1;
+const MSG_UNREGISTER_DIGITS: u32 = WM_APP + 2;
+const HOTKEY_ESCAPE_ID: i32 = 10;
+
+pub fn post_register_digits(count: usize) {
+    let hwnd = CAPTURE_HWND.load(std::sync::atomic::Ordering::SeqCst);
+    if hwnd != 0 {
+        let _ = unsafe {
+            PostMessageW(
+                Some(HWND(hwnd as *mut _)),
+                MSG_REGISTER_DIGITS,
+                WPARAM(count.clamp(1, 9)),
+                LPARAM(0),
+            )
+        };
+    }
+}
+
+pub fn post_unregister_digits() {
+    let hwnd = CAPTURE_HWND.load(std::sync::atomic::Ordering::SeqCst);
+    if hwnd != 0 {
+        let _ = unsafe {
+            PostMessageW(Some(HWND(hwnd as *mut _)), MSG_UNREGISTER_DIGITS, WPARAM(0), LPARAM(0))
+        };
+    }
+}
 
 const CF_TEXT: u32 = 1;
 const CF_UNICODETEXT: u32 = 13;
@@ -350,13 +384,45 @@ fn handle_update(app: &AppHandle, hwnd: HWND) {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if msg == WM_CLIPBOARDUPDATE {
-        if let Some(app) = APP.get() {
-            handle_update(app, hwnd);
+    match msg {
+        WM_CLIPBOARDUPDATE => {
+            if let Some(app) = APP.get() {
+                handle_update(app, hwnd);
+            }
+            LRESULT(0)
         }
-        return LRESULT(0);
+        MSG_REGISTER_DIGITS => {
+            let count = wparam.0.clamp(1, 9);
+            for i in 1..=count {
+                // VK '1'..'9' = 0x31..0x39, no modifiers.
+                let _ = unsafe {
+                    RegisterHotKey(Some(hwnd), i as i32, MOD_NOREPEAT, 0x30 + i as u32)
+                };
+            }
+            let _ = unsafe {
+                RegisterHotKey(Some(hwnd), HOTKEY_ESCAPE_ID, HOT_KEY_MODIFIERS(MOD_NOREPEAT.0), 0x1B)
+            };
+            LRESULT(0)
+        }
+        MSG_UNREGISTER_DIGITS => {
+            for id in 1..=HOTKEY_ESCAPE_ID {
+                let _ = unsafe { UnregisterHotKey(Some(hwnd), id) };
+            }
+            LRESULT(0)
+        }
+        WM_HOTKEY => {
+            if let Some(app) = APP.get() {
+                let id = wparam.0 as i32;
+                if id == HOTKEY_ESCAPE_ID {
+                    crate::hide_dropdown(app);
+                } else if (1..=9).contains(&id) {
+                    crate::paste_nth(app, (id - 1) as usize);
+                }
+            }
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
-    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
 pub fn start(app: AppHandle) {
@@ -386,6 +452,7 @@ pub fn start(app: AppHandle) {
             None,
         )
         .expect("capture window creation failed");
+        CAPTURE_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
         AddClipboardFormatListener(hwnd).expect("AddClipboardFormatListener failed");
 
         let mut msg = MSG::default();
