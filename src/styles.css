@@ -1,7 +1,7 @@
 :root {
   color-scheme: light dark;
   font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
-  font-size: 14px;
+  font-size: 13px;
   --bg: #f3f3f3;
   --fg: #1b1b1b;
   --muted: #6b6b6b;
@@ -47,7 +47,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 12px;
+  padding: 5px 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -85,13 +85,16 @@ body {
 .clip {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
+  gap: 7px;
+  height: 38px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
+  overflow: hidden;
 }
 
-.clip:hover {
+.clip:hover,
+.clip.selected {
   background: var(--hover);
 }
 
@@ -106,9 +109,9 @@ body {
 }
 
 .num {
-  width: 16px;
+  width: 14px;
   text-align: center;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--muted);
   flex-shrink: 0;
@@ -126,16 +129,19 @@ body {
 }
 
 .thumb {
-  max-height: 48px;
+  max-height: 24px;
   max-width: 100%;
   border-radius: 3px;
   display: block;
 }
 
 .clip-meta {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--muted);
-  margin-top: 2px;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .actions {
@@ -167,7 +173,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 12px;
+  padding: 4px 12px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }

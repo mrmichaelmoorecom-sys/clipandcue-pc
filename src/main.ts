@@ -97,13 +97,13 @@ function renderDropdown(clips: ClipMeta[], settings: Settings, hud: boolean) {
   app.appendChild(header);
 
   const list = el("ul", "clip-list");
-  const visible = clips.slice(0, settings.show_count);
+  list.id = "clip-list";
 
-  if (visible.length === 0) {
+  if (clips.length === 0) {
     list.appendChild(el("li", "clip empty", "Nothing copied yet"));
   }
 
-  visible.forEach((clip, i) => {
+  clips.forEach((clip, i) => {
     const li = el("li", "clip" + (clip.pinned ? " pinned" : ""));
 
     const num = el("span", "num", i < 9 ? String(i + 1) : "");
@@ -180,18 +180,34 @@ function renderDropdown(clips: ClipMeta[], settings: Settings, hud: boolean) {
   document.body.classList.toggle("hud", hud);
 }
 
+let selectedIndex = -1;
+
+function applySelection(clips: ClipMeta[]) {
+  const items = document.querySelectorAll<HTMLElement>("#clip-list .clip:not(.empty)");
+  items.forEach((li, i) => li.classList.toggle("selected", i === selectedIndex));
+  if (selectedIndex >= 0 && items[selectedIndex]) {
+    items[selectedIndex].scrollIntoView({ block: "nearest" });
+  }
+  void clips;
+}
+
 async function bootDropdown() {
   let hud = false;
+  let currentClips: ClipMeta[] = [];
   const refresh = async () => {
     const [clips, settings] = await Promise.all([
       invoke<ClipMeta[]>("list_clips"),
       invoke<Settings>("get_settings"),
     ]);
+    currentClips = clips;
+    selectedIndex = -1;
     renderDropdown(clips, settings, hud);
   };
 
   await listen<ClipMeta[]>("history-updated", async (e) => {
     const settings = await invoke<Settings>("get_settings");
+    currentClips = e.payload;
+    selectedIndex = -1;
     renderDropdown(e.payload, settings, hud);
   });
   await listen<boolean>("dropdown-shown", (e) => {
@@ -200,7 +216,22 @@ async function bootDropdown() {
   });
 
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") invoke("hide_window");
+    if (e.key === "Escape") {
+      invoke("hide_window");
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const max = currentClips.length - 1;
+      if (max < 0) return;
+      selectedIndex =
+        e.key === "ArrowDown"
+          ? Math.min(selectedIndex + 1, max)
+          : Math.max(selectedIndex - 1, 0);
+      applySelection(currentClips);
+    } else if (e.key === "Enter" && selectedIndex >= 0 && currentClips[selectedIndex]) {
+      invoke("paste_clip", { id: currentClips[selectedIndex].id });
+    } else if (/^[1-9]$/.test(e.key) && currentClips[Number(e.key) - 1]) {
+      invoke("paste_clip", { id: currentClips[Number(e.key) - 1].id });
+    }
   });
 
   await refresh();
@@ -240,7 +271,6 @@ async function bootPrefs() {
 
   const form = el("div", "prefs-form");
 
-  const showCount = numberInput(s.show_count, 1, 9);
   const cap = numberInput(s.history_cap, 1, 50);
   const maxMb = numberInput(s.max_format_mb, 1, 200);
   const autoPaste = checkbox(s.auto_paste);
@@ -266,7 +296,6 @@ async function bootPrefs() {
     hotkey.value = parts.join("+");
   });
 
-  form.appendChild(prefRow("Clips shown in list", showCount, "1–9, usable via number keys"));
   form.appendChild(prefRow("History size", cap, "unpinned clips kept, max 50"));
   form.appendChild(prefRow("Max size per format (MB)", maxMb, "larger copies are not saved"));
   form.appendChild(prefRow("Auto-paste on select", autoPaste));
@@ -281,7 +310,7 @@ async function bootPrefs() {
   const status = el("span", "save-status", "");
   save.addEventListener("click", async () => {
     const next: Settings = {
-      show_count: Math.min(9, Math.max(1, Number(showCount.value) || 9)),
+      show_count: 9,
       history_cap: Math.min(50, Math.max(1, Number(cap.value) || 50)),
       max_format_mb: Math.min(200, Math.max(1, Number(maxMb.value) || 50)),
       auto_paste: autoPaste.checked,

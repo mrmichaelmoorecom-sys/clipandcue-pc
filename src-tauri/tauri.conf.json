@@ -16,7 +16,7 @@
         "label": "dropdown",
         "title": "clipandcue",
         "width": 360,
-        "height": 480,
+        "height": 398,
         "decorations": false,
         "resizable": false,
         "alwaysOnTop": true,
